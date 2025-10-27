@@ -9,54 +9,45 @@ import argparse
 from pytorch_fid import fid_score
 import lpips
 from tqdm import tqdm
+from skimage.metrics import peak_signal_noise_ratio as sk_psnr
+from skimage.metrics import structural_similarity as sk_ssim
+import shutil
 
-# # 抑制 torchvision 中关于 pretrained 参数的弃用警告
-# warnings.filterwarnings('ignore', category=UserWarning, message='.*pretrained.*')
-# warnings.filterwarnings('ignore', category=UserWarning, message='.*weights.*')
+
 
 class NotSameNameError(Exception):
     pass
 
-# LPIPS 函数
-def compute_lpips(img1, img2):
-    # images should be normalized to [-1, 1] and have the same shape [batch, 3, H, W]
-    # 将 numpy 数组转换为 tensor
-    img1 = torch.from_numpy(img1).float() / 255.0 * 2 - 1
-    img2 = torch.from_numpy(img2).float() / 255.0 * 2 - 1
-    # 转换形状从 HWC 到 CHW，并添加 batch 维度
-    img1 = img1.permute(2, 0, 1).unsqueeze(0)
-    img2 = img2.permute(2, 0, 1).unsqueeze(0)
-    return lpips_model(img1, img2).item()
+def _preprocess_to_256(img):
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    if h == 256 and w == 256:
+        return img
+    interp = cv2.INTER_AREA if (h >= 256 and w >= 256) else cv2.INTER_CUBIC
+    return cv2.resize(img, (256, 256), interpolation=interp)
 
-# PSNR函数
+# LPIPS 函数（输入为 BGR，内部转 RGB）
+def compute_lpips(img1_bgr, img2_bgr):
+    device = next(lpips_model.parameters()).device if hasattr(lpips_model, 'parameters') else 'cpu'
+    img1_rgb = cv2.cvtColor(img1_bgr, cv2.COLOR_BGR2RGB)
+    img2_rgb = cv2.cvtColor(img2_bgr, cv2.COLOR_BGR2RGB)
+    img1_tensor = torch.from_numpy(img1_rgb).float() / 255.0 * 2 - 1
+    img2_tensor = torch.from_numpy(img2_rgb).float() / 255.0 * 2 - 1
+    img1_tensor = img1_tensor.permute(2, 0, 1).unsqueeze(0).to(device)
+    img2_tensor = img2_tensor.permute(2, 0, 1).unsqueeze(0).to(device)
+    return lpips_model(img1_tensor, img2_tensor).item()
+
+# 使用 skimage 计算 PSNR
 def psnr(img1, img2):
-    mse = np.mean((img1 - img2) ** 2)
-    if mse == 0:
-        return 100
-    PIXEL_MAX = 255.0
-    return 20 * math.log10(PIXEL_MAX / math.sqrt(mse))
+    return sk_psnr(img1, img2, data_range=255)
 """
 nohup python -u compute.py > compute.out 2>&1 &
 
 """
-# SSIM函数
+# 使用 skimage 计算 SSIM（彩色）
 def ssim(img1, img2):
-    C1 = (0.01 * 255) ** 2
-    C2 = (0.03 * 255) ** 2
-    img1 = img1.astype(np.float64)
-    img2 = img2.astype(np.float64)
-    kernel = cv2.getGaussianKernel(11, 1.5)
-    window = np.outer(kernel, kernel.transpose())
-    mu1 = cv2.filter2D(img1, -1, window)[5:-5, 5:-5]  # valid
-    mu2 = cv2.filter2D(img2, -1, window)[5:-5, 5:-5]
-    mu1_sq = mu1 ** 2
-    mu2_sq = mu2 ** 2
-    mu1_mu2 = mu1 * mu2
-    sigma1_sq = cv2.filter2D(img1 ** 2, -1, window)[5:-5, 5:-5] - mu1_sq
-    sigma2_sq = cv2.filter2D(img2 ** 2, -1, window)[5:-5, 5:-5] - mu2_sq
-    sigma12 = cv2.filter2D(img1 * img2, -1, window)[5:-5, 5:-5] - mu1_mu2
-    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
-    return ssim_map.mean()
+    return sk_ssim(img1, img2, channel_axis=2, data_range=255)
 
 def finalReport(avg_fid, avg_psnr, avg_ssim, avg_lpips, args):
     s = f"""
@@ -92,8 +83,8 @@ def compare_folders(args):
     # 只获取图片文件
     all_files1 = os.listdir(folder1)
     all_files2 = os.listdir(folder2)
-    files1 = sorted([f for f in all_files1 if f.endswith(('.png', '.jpg', '.bmp', '.jpeg'))])
-    files2 = sorted([f for f in all_files2 if f.endswith(('.png', '.jpg', '.bmp', '.jpeg'))])
+    files1 = sorted([f for f in all_files1 if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    files2 = sorted([f for f in all_files2 if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
 
     # 确保两个文件夹的文件数相同
     n1, n2 = len(files1), len(files2)
@@ -104,6 +95,17 @@ def compare_folders(args):
         return
     
 
+    # 预处理临时目录（用于 FID）
+    tmp_root = os.path.join(os.path.dirname(folder1), "_tmp_fid")
+    tmp_pred_dir = os.path.join(tmp_root, "pred")
+    tmp_gt_dir = os.path.join(tmp_root, "gt")
+    if os.path.exists(tmp_pred_dir):
+        shutil.rmtree(tmp_pred_dir)
+    if os.path.exists(tmp_gt_dir):
+        shutil.rmtree(tmp_gt_dir)
+    os.makedirs(tmp_pred_dir, exist_ok=True)
+    os.makedirs(tmp_gt_dir, exist_ok=True)
+
     # 遍历两个文件夹的同名文件
     for file1, file2 in tqdm(zip(files1, files2), total=n1):
         if args.strict_check:
@@ -112,15 +114,23 @@ def compare_folders(args):
                 raise NotSameNameError(f"{file1} and {file2} have different names! This may influence the evaluation results!")
         
         # 只处理图片文件
-        if file1.endswith(('.png', '.jpg', '.bmp')) and file2.endswith(('.png', '.jpg', '.bmp')):
+        if file1.lower().endswith(('.png', '.jpg', '.jpeg')) and file2.lower().endswith(('.png', '.jpg', '.jpeg')):
             img1 = cv2.imread(os.path.join(folder1, file1))
             img2 = cv2.imread(os.path.join(folder2, file2))
 
-            # 检查图像是否具有相同的尺寸，如果不同则调整大小
-            if img1.shape != img2.shape:
-                print(f"[Warning] {file1} and {file2} have different shapes")
+            if img1 is None or img2 is None:
+                print(f"读取图像失败: {file1} 或 {file2}")
+                continue
 
-                img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]))
+            # 统一预处理到 256x256
+            img1 = _preprocess_to_256(img1)
+            img2 = _preprocess_to_256(img2)
+            if img1 is None or img2 is None:
+                print(f"预处理失败: {file1} 或 {file2}")
+                continue
+            # 为 FID 保存预处理图像
+            cv2.imwrite(os.path.join(tmp_pred_dir, file1), img1)
+            cv2.imwrite(os.path.join(tmp_gt_dir, file2), img2)
 
             # 计算PSNR和SSIM
             psnr_value = psnr(img1, img2)
@@ -146,18 +156,15 @@ def compare_folders(args):
         print("没有找到有效的图像进行计算")
         return
     
-    # 计算两个文件夹的FID
-    if fid_gt_cache:
-        avg_fid = fid_score.calculate_fid_given_paths(
-            paths=[folder1, fid_gt_cache],
-            batch_size=64,
-            device=args.device,
-            dims=2048,
-            num_workers=0,  # Windows 上设置为 0 避免多进程问题
-        )
+    # 计算两个文件夹的 FID（基于预处理后的临时目录），忽略 .npz 缓存
+    if len(os.listdir(tmp_pred_dir)) == 0 or len(os.listdir(tmp_gt_dir)) == 0:
+        print("预处理临时目录为空，无法计算 FID")
+        avg_fid = float('nan')
     else:
+        if fid_gt_cache and os.path.exists(fid_gt_cache) and fid_gt_cache.endswith('.npz'):
+            print("检测到 FID 缓存，但已忽略，因为图像被统一缩放到 256x256")
         avg_fid = fid_score.calculate_fid_given_paths(
-            paths=[folder1, folder2],
+            paths=[tmp_pred_dir, tmp_gt_dir],
             batch_size=64,
             device=args.device,
             dims=2048,

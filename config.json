@@ -1,0 +1,61 @@
+{
+    "lpips_model": "alex",
+    "strict_check": true,
+    "device": "cuda",
+    "all_metrics": false,
+    "output_path": "E:\\UIE_2509\\allimages\\metrics",
+    "datasets": {
+        "UIEBD": {
+            "parentFolder": "E:\\UIE_2509\\allimages\\UIEBD",
+            "gt_dir": "12GT",
+            "fid_gt_cache": "gt_fid.npz",
+            "pred_dir": {
+                "UD": "01UD",
+                "UWCNN": "02UWCNN",
+                "SCNet": "03SCNet",
+                "UIEWD": "04UIEWD",
+                "UIEC2Net": "05UIEC2Net",
+                "Ucolor": "06Ucolor",
+                "Ushape": "07Ushape",
+                "Water_Net": "08Water_Net",
+                "DM_underwater": "09DM_underwater",
+                "WF_Diff": "10WF_Diff",
+                "Ours": "11ours"
+            }
+        },
+        "LSUI": {
+            "parentFolder": "E:\\UIE_2509\\allimages\\LSUI",
+            "gt_dir": "GT",
+            "fid_gt_cache": "gt_fid.npz",
+            "pred_dir": {
+                "UD": "00UD",
+                "UWCNN": "01UWCNN",
+                "SCNet": "02SCNet",
+                "UIEWD": "03UIEWD",
+                "UIEC2Net": "04UIEC2Net",
+                "Ucolor": "05Ucolor",
+                "WaterNet": "06WaterNet",
+                "Ushape": "07Ushape",
+                "DM_water": "08DM-water",
+                "WF_Diff": "09WF-Diff",
+                "Ours": "10Ours"
+            }
+        },
+        "U45": {
+            "parentFolder": "E:\\UIE_2509\\allimages\\U45",
+            "pred_dir": {
+                "UD_INPUT": "00UD_INPUT",
+                "UWCNN": "01UWCNN",
+                "SCNet": "02SCNet",
+                "UIE_WD": "03UIE_WD",
+                "UIEC2Net": "04UIEC2Net",
+                "Ucolor": "05Ucolor",
+                "WaterNet": "06WaterNet",
+                "Ushape": "07Ushape",
+                "DM_underwater": "08DM_underwater",
+                "WF_Diff": "09WF_Diff",
+                "Ours": "10_Ours"
+            }
+        }
+    }
+}
