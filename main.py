@@ -105,8 +105,8 @@ def _preprocess_to_256(img):
     h, w = img.shape[:2]
     if h == 256 and w == 256:
         return img
-    interp = cv2.INTER_AREA if (h >= 256 and w >= 256) else cv2.INTER_CUBIC
-    return cv2.resize(img, (256, 256), interpolation=interp)
+    else:
+        raise ValueError(f"Image size must be 256x256, but got {h}x{w}")
 
 def compute_lpips_local(img1_bgr, img2_bgr):
     """使用全局 lpips_model 计算 LPIPS（RGB，[-1,1]，NCHW）"""
@@ -147,47 +147,31 @@ def compare_folders(folder1, folder2, fid_gt_cache, m_name, device='cpu')->dict:
         return
     
 
-    # 预处理临时目录（用于 FID）
-    tmp_root = os.path.join(os.path.dirname(folder1), "_tmp_fid")
-    tmp_pred_dir = os.path.join(tmp_root, m_name, "pred")
-    tmp_gt_dir = os.path.join(tmp_root, m_name, "gt")
-    if os.path.exists(tmp_pred_dir):
-        shutil.rmtree(tmp_pred_dir)
-    if os.path.exists(tmp_gt_dir):
-        shutil.rmtree(tmp_gt_dir)
-    os.makedirs(tmp_pred_dir, exist_ok=True)
-    os.makedirs(tmp_gt_dir, exist_ok=True)
-
     # 遍历两个文件夹的同名文件
     for file1, file2 in tqdm(zip(files1, files2), total=n1):
         fname1, fname2 = os.path.splitext(file1), os.path.splitext(file2)
         if fname1 != fname2:
             raise NotSameNameError(f"{file1} and {file2} have different names! This may influence the evaluation results!")
-        
+
         # 只处理图片文件
         if file1.lower().endswith(('.png', '.jpg', '.jpeg')) and file2.lower().endswith(('.png', '.jpg', '.jpeg')):
             img1 = cv2.imread(os.path.join(folder1, file1))
             img2 = cv2.imread(os.path.join(folder2, file2))
-            
+
             # 检查图像是否成功读取
             if img1 is None or img2 is None:
                 logger.warning(f"Failed to read images: {file1} or {file2}, skipping...")
                 continue
 
-            # 统一预处理到 256x256
+            # 尺寸检查
             img1 = _preprocess_to_256(img1)
             img2 = _preprocess_to_256(img2)
             if img1 is None or img2 is None:
                 logger.warning(f"Preprocess failed for: {file1} or {file2}, skipping...")
                 continue
-            # 为 FID 存储预处理图像
-            cv2.imwrite(os.path.join(tmp_pred_dir, file1), img1)
-            cv2.imwrite(os.path.join(tmp_gt_dir, file2), img2)
 
             # 计算PSNR和SSIM（使用 skimage）
-            # skimage 的 psnr 需要指定 data_range（图像的值域范围）
             psnr_value = psnr(img1, img2, data_range=255)
-            # skimage 的 ssim 需要指定 channel_axis 和 data_range
             ssim_value = ssim(img1, img2, channel_axis=2, data_range=255)
             lpips_value = compute_lpips_local(img1, img2)
 
@@ -197,7 +181,6 @@ def compare_folders(folder1, folder2, fid_gt_cache, m_name, device='cpu')->dict:
             ssim_total += ssim_value
             lpips_total += lpips_value
             count += 1
-    # logger.info(f"The number of images processed: {count}")
     # 计算平均值
     if count > 0:
         avg_psnr = psnr_total / count
@@ -206,24 +189,31 @@ def compare_folders(folder1, folder2, fid_gt_cache, m_name, device='cpu')->dict:
     else:
         logger.error("No valid images found for calculation")
         return
-    
-    # 计算两个文件夹的 FID（基于预处理后的临时目录），忽略 .npz 缓存以避免尺寸不一致
+
+    # 计算两个文件夹的 FID，支持 GT 缓存(.npz) 或 GT 文件夹
     avg_fid = None
-    if os.path.isdir(tmp_pred_dir) and os.path.isdir(tmp_gt_dir):
-        if len(os.listdir(tmp_pred_dir)) == 0 or len(os.listdir(tmp_gt_dir)) == 0:
-            logger.error("Temporary directories for FID are empty, cannot compute FID")
+    if os.path.isdir(folder1) and os.path.isdir(folder2):
+        if len(os.listdir(folder1)) == 0 or len(os.listdir(folder2)) == 0:
+            logger.error("Input directories for FID are empty, cannot compute FID")
         else:
-            if fid_gt_cache and os.path.exists(fid_gt_cache) and fid_gt_cache.endswith('.npz'):
-                logger.warning("Ignoring provided FID cache (.npz) because images were resized to 256x256.")
+            if fid_gt_cache and os.path.isfile(fid_gt_cache) and fid_gt_cache.lower().endswith('.npz'):
+                logger.info(f"Using FID GT cache: {fid_gt_cache}")
+                paths = [folder1, fid_gt_cache]   # 文件夹 + .npz
+            else:
+                logger.info(f"Using GT folder for FID: {folder2}")
+                paths = [folder1, folder2]        # 两个文件夹
+
             avg_fid = fid_score.calculate_fid_given_paths(
-                paths=[tmp_pred_dir, tmp_gt_dir],
+                paths=paths,
                 batch_size=64,
                 device=device,
                 dims=2048,
-                num_workers=0,  # Windows 上设置为 0 避免多进程问题
+                num_workers=0
             )
     else:
-        logger.warning("No temporary directories provided for FID; skipping FID computation.")
+        logger.warning("Input directories for FID not found; skipping FID computation.")
+
+
     return {
         'method': m_name,
         'count': count,
@@ -305,7 +295,7 @@ def main():
     global lpips_model
     
     parser = argparse.ArgumentParser(description='Compute Denoising Metrics: PSNR, SSIM, LPIPS, FID, UIQM, UCIQE')
-    parser.add_argument('--config','-c', required=True, type=str, help='Config file')
+    parser.add_argument('--config','-c', default="./config.json", required=True, type=str, help='Config file')
     args = parser.parse_args()
     
     # 解析配置文件

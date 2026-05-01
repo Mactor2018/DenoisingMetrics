@@ -24,8 +24,8 @@ def _preprocess_to_256(img):
     h, w = img.shape[:2]
     if h == 256 and w == 256:
         return img
-    interp = cv2.INTER_AREA if (h >= 256 and w >= 256) else cv2.INTER_CUBIC
-    return cv2.resize(img, (256, 256), interpolation=interp)
+    else:
+        raise ValueError(f"Image size must be 256x256, but got {h}x{w}")
 
 # LPIPS 函数（输入为 BGR，内部转 RGB）
 def compute_lpips(img1_bgr, img2_bgr):
@@ -59,10 +59,10 @@ def finalReport(avg_fid, avg_psnr, avg_ssim, avg_lpips, args):
 LPIPS模型: {args.lpips_model}
 FID GT Cache: {args.fid_gt_cache if args.fid_gt_cache else '无'}
 {'-'*20}
-平均FID: {avg_fid:.4f}
 平均PSNR: {avg_psnr:.4f}
 平均SSIM: {avg_ssim:.4f}
 平均LPIPS: {avg_lpips:.4f}
+平均FID: {avg_fid:.4f}
 {'='*20}
     """
     print(s)
@@ -95,24 +95,13 @@ def compare_folders(args):
         return
     
 
-    # 预处理临时目录（用于 FID）
-    tmp_root = os.path.join(os.path.dirname(folder1), "_tmp_fid")
-    tmp_pred_dir = os.path.join(tmp_root, "pred")
-    tmp_gt_dir = os.path.join(tmp_root, "gt")
-    if os.path.exists(tmp_pred_dir):
-        shutil.rmtree(tmp_pred_dir)
-    if os.path.exists(tmp_gt_dir):
-        shutil.rmtree(tmp_gt_dir)
-    os.makedirs(tmp_pred_dir, exist_ok=True)
-    os.makedirs(tmp_gt_dir, exist_ok=True)
-
     # 遍历两个文件夹的同名文件
     for file1, file2 in tqdm(zip(files1, files2), total=n1):
         if args.strict_check:
             fname1, fname2 = os.path.splitext(file1), os.path.splitext(file2)
             if fname1 != fname2:
                 raise NotSameNameError(f"{file1} and {file2} have different names! This may influence the evaluation results!")
-        
+
         # 只处理图片文件
         if file1.lower().endswith(('.png', '.jpg', '.jpeg')) and file2.lower().endswith(('.png', '.jpg', '.jpeg')):
             img1 = cv2.imread(os.path.join(folder1, file1))
@@ -122,15 +111,12 @@ def compare_folders(args):
                 print(f"读取图像失败: {file1} 或 {file2}")
                 continue
 
-            # 统一预处理到 256x256
+            # 尺寸检查
             img1 = _preprocess_to_256(img1)
             img2 = _preprocess_to_256(img2)
             if img1 is None or img2 is None:
-                print(f"预处理失败: {file1} 或 {file2}")
+                print(f"尺寸检查失败: {file1} 或 {file2}")
                 continue
-            # 为 FID 保存预处理图像
-            cv2.imwrite(os.path.join(tmp_pred_dir, file1), img1)
-            cv2.imwrite(os.path.join(tmp_gt_dir, file2), img2)
 
             # 计算PSNR和SSIM
             psnr_value = psnr(img1, img2)
@@ -149,29 +135,23 @@ def compare_folders(args):
         avg_psnr = psnr_total / count
         avg_ssim = ssim_total / count
         avg_lpips = lpips_total / count
-        # print(f"平均PSNR: {avg_psnr:.4f}")
-        # print(f"平均SSIM: {avg_ssim:.4f}")
-        # print(f"平均LPIPS: {avg_lpips:.4f}")
     else:
         print("没有找到有效的图像进行计算")
         return
-    
-    # 计算两个文件夹的 FID（基于预处理后的临时目录），忽略 .npz 缓存
-    if len(os.listdir(tmp_pred_dir)) == 0 or len(os.listdir(tmp_gt_dir)) == 0:
-        print("预处理临时目录为空，无法计算 FID")
+
+    # 计算两个文件夹的 FID，允许使用 FID GT Cache
+    if len(os.listdir(folder1)) == 0 or len(os.listdir(folder2)) == 0:
+        print("输入目录为空，无法计算 FID")
         avg_fid = float('nan')
     else:
-        if fid_gt_cache and os.path.exists(fid_gt_cache) and fid_gt_cache.endswith('.npz'):
-            print("检测到 FID 缓存，但已忽略，因为图像被统一缩放到 256x256")
+        fid_target = args.fid_gt_cache if (args.fid_gt_cache and os.path.exists(args.fid_gt_cache) and args.fid_gt_cache.endswith('.npz')) else folder2
         avg_fid = fid_score.calculate_fid_given_paths(
-            paths=[tmp_pred_dir, tmp_gt_dir],
+            paths=[folder1, fid_target],
             batch_size=64,
             device=args.device,
             dims=2048,
-            num_workers=0,  # Windows 上设置为 0 避免多进程问题
+            num_workers=0
         )
-    # print(f"平均FID: {avg_fid:.4f}")
-    
     # 输出最终报告
     finalReport(avg_fid, avg_psnr, avg_ssim, avg_lpips, args)
     
