@@ -1,0 +1,11 @@
+torch
+pandas
+opencv-python
+tqdm
+numpy
+scikit-image
+pytorch_fid
+lpips
+torchvision
+scipy
+threadpoolctl
